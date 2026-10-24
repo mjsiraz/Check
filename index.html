@@ -941,6 +941,19 @@
 
     <!-- ===== Main Button ===== -->
     <div class="button-group">
+        <div id="liveBox" style="width:100%;margin-bottom:12px;padding:12px;border-radius:16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);">
+            <div style="font-size:15px;margin-bottom:8px;">🔎 লাইভ সার্চ (টাইপ করলেই নিচে নাম্বার আসবে)</div>
+            <input type="text" id="liveSearch" inputmode="numeric" autocomplete="off" placeholder="ডিজিট লিখুন, যেমন: 555555" style="width:100%;padding:12px;border-radius:12px;border:1px solid rgba(255,255,255,0.25);background:rgba(255,255,255,0.08);color:inherit;font-size:18px;letter-spacing:1px;box-sizing:border-box;" />
+            <div id="liveStatus" style="margin-top:8px;font-size:13px;opacity:.8;"></div>
+            <div id="liveList" style="margin-top:8px;display:flex;flex-direction:column;gap:6px;max-height:360px;overflow:auto;"></div>
+            <pre id="liveRaw" style="display:none;margin:8px 0 0;white-space:pre-wrap;word-break:break-all;font-size:11px;opacity:.7;max-height:140px;overflow:auto;"></pre>
+        </div>
+        <div style="width:100%;margin-bottom:12px;padding:12px;border-radius:16px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);">
+            <div style="font-size:14px;margin-bottom:8px;opacity:.9;">🧪 API টেস্ট (ব্রাউজারে সরাসরি রেসপন্স দেখুন)</div>
+            <input type="text" id="apiTestInput" placeholder="যেমন: 88016555555 অথবা 555555" style="width:100%;padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.08);color:inherit;font-size:15px;box-sizing:border-box;" />
+            <button type="button" id="apiTestBtn" style="margin-top:8px;width:100%;padding:10px;border-radius:12px;border:0;background:#6d3fe0;color:#fff;font-size:15px;">টেস্ট পাঠান</button>
+            <pre id="apiTestOut" style="margin:8px 0 0;white-space:pre-wrap;word-break:break-all;font-size:12px;max-height:220px;overflow:auto;"></pre>
+        </div>
         <button type="button" class="btn-start" id="startBtn">🚀 চেক করা শুরু করুন</button>
     </div>
 
@@ -1181,6 +1194,43 @@
                 : { base: '88018', brand: 'ROBI', label: 'রবি (018)' };
         }
 
+        // রেসপন্স যেকোনো ফরম্যাটে হলেও নাম্বার চিনে নেয়
+        extractFound(data, queried) {
+            if (data && data.available === false) return [];
+            const text = JSON.stringify(data) || '';
+            const out = new Set();
+            const re = /(?:880|0)?1[3-9]\d{8}/g;
+            let m;
+            while ((m = re.exec(text)) !== null) {
+                let n = m[0];
+                if (n.length === 10) n = '880' + n;
+                else if (n.startsWith('0')) n = '88' + n;
+                if (n.length === 13) out.add(n);
+            }
+            if (data && data.available === true) out.add(queried);
+            return [...out];
+        }
+
+        async testApi() {
+            const box = document.getElementById('apiTestOut');
+            const val = document.getElementById('apiTestInput').value.trim();
+            const choice = document.querySelector('input[name="apiChoice"]:checked').value;
+            const brand = choice === 'api2' ? 'ROBI' : 'AIRTEL';
+            if (!val) { box.textContent = 'উপরের ঘরে নাম্বার বা ডিজিট লিখুন'; return; }
+            box.textContent = 'পাঠানো হচ্ছে...';
+            try {
+                const r = await fetch('https://da-api.robi.com.bd/da-nll/free-msisdn/get-msisdn-list', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ msisdn: val, brand, simCategory: 'PREPAID' })
+                });
+                const t = await r.text();
+                box.textContent = `HTTP ${r.status} | brand=${brand} | msisdn=${val}\n` + t.slice(0, 1500);
+            } catch (e) {
+                box.textContent = 'এরর: ' + e.message;
+            }
+        }
+
         noteError(text) {
             this.errorCount = (this.errorCount || 0) + 1;
             if (this.errorCount % 20 === 1) this.addLog(`⚠️ ${text} (মোট এরর: ${this.errorCount})`, 'warning');
@@ -1213,11 +1263,13 @@
                             this.addLog(`📨 API রেসপন্স নমুনা: ${JSON.stringify(data).slice(0, 200)}`, 'info');
                         }
                         this.numbersChecked++;
-                        if (data.available === true) {
-                            this.availableNumbers.push(number);
-                            this.addResult(number, task.api);
-                            this.addLog(`✅ ${cfg.label} পাওয়া গেছে: ${number}`, task.api);
-                            this.saveNumber(number);
+                        const found = this.extractFound(data, number);
+                        for (const n of found) {
+                            if (this.availableNumbers.includes(n)) continue;
+                            this.availableNumbers.push(n);
+                            this.addResult(n, task.api);
+                            this.addLog(`✅ ${cfg.label} পাওয়া গেছে: ${n}`, task.api);
+                            this.saveNumber(n);
                         }
                         this.updateProgress();
                         this.speedCounter++;
@@ -1424,6 +1476,112 @@
             });
         });
     });
+
+
+    // ===== Live search (টাইপ করলেই সাজেশন) =====
+    (function () {
+        const API = 'https://da-api.robi.com.bd/da-nll/free-msisdn/get-msisdn-list';
+        const input = document.getElementById('liveSearch');
+        const list = document.getElementById('liveList');
+        const status = document.getElementById('liveStatus');
+        const raw = document.getElementById('liveRaw');
+        let timer = null, ctrl = null, seq = 0;
+        const brands = [['AIRTEL', '016'], ['ROBI', '018']];
+
+        function extract(data) {
+            if (!data || data.available === false) return [];
+            const text = JSON.stringify(data) || '';
+            const out = new Set();
+            const re = /(?:880|0)?1[3-9]\d{8}/g;
+            let m;
+            while ((m = re.exec(text)) !== null) {
+                let n = m[0];
+                if (n.length === 10) n = '880' + n;
+                else if (n.startsWith('0')) n = '88' + n;
+                if (n.length === 13) out.add(n);
+            }
+            return [...out];
+        }
+
+        async function ask(brand, q, signal) {
+            const r = await fetch(API, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ msisdn: q, brand, simCategory: 'PREPAID' }),
+                signal
+            });
+            const t = await r.text();
+            let data = null;
+            try { data = JSON.parse(t); } catch (e) {}
+            return { ok: r.ok, status: r.status, text: t, nums: r.ok ? extract(data) : [] };
+        }
+
+        async function search(q, id) {
+            if (ctrl) ctrl.abort();
+            ctrl = new AbortController();
+            status.textContent = 'খুঁজছি...';
+            list.innerHTML = '';
+            raw.style.display = 'none';
+            try {
+                const res = await Promise.all(brands.map(b => ask(b[0], q, ctrl.signal).catch(e => {
+                    if (e.name === 'AbortError') throw e;
+                    return { ok: false, status: 0, text: e.message, nums: [] };
+                })));
+                if (id !== seq) return;
+                const seen = new Set(), all = [];
+                res.forEach((r, i) => r.nums.forEach(n => {
+                    const local = '0' + n.slice(3);
+                    if (seen.has(n)) return;
+                    if (!(local.includes(q) || n.includes(q))) return;
+                    seen.add(n);
+                    all.push({ n, local, op: brands[i][1] });
+                }));
+                all.sort((a, b) => a.local.localeCompare(b.local));
+                if (all.length === 0) {
+                    status.textContent = 'কোনো নাম্বার মেলেনি';
+                    raw.textContent = res.map((r, i) => `${brands[i][0]} HTTP ${r.status}: ${r.text.slice(0, 300)}`).join('\n');
+                    raw.style.display = 'block';
+                    return;
+                }
+                status.textContent = `${all.length} টি নাম্বার মিলেছে (ট্যাপ করলে কপি হবে)`;
+                list.innerHTML = '';
+                all.forEach(x => {
+                    const i0 = x.local.indexOf(q);
+                    const html = i0 >= 0
+                        ? x.local.slice(0, i0) + '<b style="color:#a78bfa;">' + q + '</b>' + x.local.slice(i0 + q.length)
+                        : x.local;
+                    const row = document.createElement('div');
+                    row.style.cssText = 'padding:12px;border-radius:12px;background:rgba(255,255,255,0.08);font-size:18px;letter-spacing:1px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;';
+                    row.innerHTML = `<span>${html}</span><span style="font-size:12px;opacity:.7;">${x.op}</span>`;
+                    row.addEventListener('click', () => {
+                        try { navigator.clipboard.writeText(x.local); } catch (e) {}
+                        status.textContent = `কপি হয়েছে: ${x.local}`;
+                    });
+                    list.appendChild(row);
+                });
+            } catch (e) {
+                if (e.name === 'AbortError') return;
+                status.textContent = 'এরর: ' + e.message;
+            }
+        }
+
+        input.addEventListener('input', function () {
+            this.value = this.value.replace(/[^0-9]/g, '').slice(0, 11);
+            clearTimeout(timer);
+            const q = this.value;
+            if (q.length < 3) {
+                if (ctrl) ctrl.abort();
+                list.innerHTML = '';
+                raw.style.display = 'none';
+                status.textContent = q.length ? 'কমপক্ষে ৩টি ডিজিট লিখুন' : '';
+                return;
+            }
+            const id = ++seq;
+            timer = setTimeout(() => search(q, id), 450);
+        });
+    })();
+
+    document.getElementById('apiTestBtn').addEventListener('click', () => checker.testApi());
 
     document.getElementById('startBtn').addEventListener('click', function() {
         if (this.textContent.includes('থামান')) {
